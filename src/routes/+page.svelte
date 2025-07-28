@@ -4,13 +4,134 @@
   import Tetrahedron from '$lib/Tetrahedron.svelte';
 
   let isLoading = true;
+  let startFinishAnimation = false;
+  let contentVisible = false;
+  let startLoadingFadeOut = false;
+  let sidebarOpen = false;
+  let messages: Array<{type: 'user' | 'assistant' | 'system', content: string, timestamp: Date}> = [];
+  let inputValue = '';
+  let websocket: WebSocket | null = null;
+  let connectionStatus: 'connecting' | 'connected' | 'disconnected' | 'error' = 'disconnected';
+  let messagesContainer: HTMLElement | undefined;
+
+  // WebSocket URL - replace with your actual Cloud Run function URL
+  // Example: 'wss://reagent-agent-123abc-uc.a.run.app/ws'
+  const WS_URL = 'wss://your-cloud-run-function-url.run.app/ws';
 
   onMount(() => {
-    // Show loading animation for 2 seconds
+    // Show loading animation for 2 seconds, then start finish sequence
     setTimeout(() => {
-      isLoading = false;
+      startFinishAnimation = true;
+      
+      // Start fading in content AFTER triangles finish disappearing (3.2s into finish animation)
+      setTimeout(() => {
+        contentVisible = true;
+        // Start fading out the loading animation at the same time content appears
+        startLoadingFadeOut = true;
+      }, 3200);
+      
+      // Wait for loading fade-out to complete (4.4 seconds total - 3.2s triangle + 1.2s loading fade)
+      setTimeout(() => {
+        isLoading = false;
+        initializeWebSocket();
+      }, 4400);
     }, 2000);
+
+    return () => {
+      if (websocket) {
+        websocket.close();
+      }
+    };
   });
+
+  function initializeWebSocket() {
+    try {
+      connectionStatus = 'connecting';
+      websocket = new WebSocket(WS_URL);
+
+      websocket.onopen = () => {
+        connectionStatus = 'connected';
+        addSystemMessage('Connected to agent. How can I help you today?');
+      };
+
+      websocket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          addMessage('assistant', data.message || data.content || event.data);
+        } catch (e) {
+          addMessage('assistant', event.data);
+        }
+      };
+
+      websocket.onclose = () => {
+        connectionStatus = 'disconnected';
+        addSystemMessage('Connection lost. Attempting to reconnect...');
+        setTimeout(initializeWebSocket, 3000);
+      };
+
+      websocket.onerror = () => {
+        connectionStatus = 'error';
+        addSystemMessage('Connection error. Please check your internet connection.');
+      };
+    } catch (error) {
+      connectionStatus = 'error';
+      addSystemMessage('Failed to connect to agent. Using demo mode.');
+      // Fallback to demo mode for development
+      setTimeout(() => {
+        connectionStatus = 'connected';
+        addSystemMessage('Demo mode: I\'m a simulated agent for testing. Try sending me a message!');
+      }, 1000);
+    }
+  }
+
+  function addMessage(type: 'user' | 'assistant', content: string) {
+    messages = [...messages, { type, content, timestamp: new Date() }];
+    setTimeout(scrollToBottom, 100);
+  }
+
+  function addSystemMessage(content: string) {
+    messages = [...messages, { type: 'system', content, timestamp: new Date() }];
+    setTimeout(scrollToBottom, 100);
+  }
+
+  function scrollToBottom() {
+    if (messagesContainer) {
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+  }
+
+  function handleSubmit() {
+    if (inputValue.trim() && connectionStatus === 'connected') {
+      const message = inputValue.trim();
+      addMessage('user', message);
+      
+      if (websocket && websocket.readyState === WebSocket.OPEN) {
+        // Send message to WebSocket
+        websocket.send(JSON.stringify({ 
+          type: 'message', 
+          content: message,
+          timestamp: new Date().toISOString()
+        }));
+      } else {
+        // Demo mode response
+        setTimeout(() => {
+          const demoResponses = [
+            "I understand your request. In a real implementation, I would process this through the cloud backend.",
+            "This is a demo response. Your message would be sent to the Cloud Run function via WebSocket.",
+            "Great question! The actual agent would analyze this and provide a detailed response.",
+            "In the live version, I would execute tasks, search the web, or generate code based on your request.",
+            "Demo mode: Your message has been received. The real agent would take action on this."
+          ];
+          const randomResponse = demoResponses[Math.floor(Math.random() * demoResponses.length)];
+          addMessage('assistant', randomResponse);
+        }, 1000 + Math.random() * 2000); // Random delay between 1-3 seconds
+      }
+      
+      inputValue = '';
+    } else if (connectionStatus !== 'connected') {
+      addSystemMessage('Not connected to agent. Please wait for connection to be established.');
+    }
+  }
 
   function handleBack() {
     goto('/simple-agent');
@@ -21,25 +142,40 @@
     if (element) {
       element.scrollIntoView({ behavior: 'smooth' });
     }
+    // Close sidebar on mobile after navigation
+    if (window.innerWidth <= 1024) {
+      sidebarOpen = false;
+    }
+  }
+
+  function toggleSidebar() {
+    sidebarOpen = !sidebarOpen;
   }
 </script>
 
 <!-- Loading Screen -->
 {#if isLoading}
-  <div class="loading-container">
-    <Tetrahedron />
-  </div>
-{:else}
-  <div class="loading-container hidden">
-    <Tetrahedron />
+  <div class="loading-container" class:loading-fade-out={startLoadingFadeOut}>
+    <Tetrahedron {startFinishAnimation} {startLoadingFadeOut} />
   </div>
 {/if}
 
 <!-- Main Content -->
-{#if !isLoading}
-  <div class="min-h-screen bg-custom text-white">
+<div class="min-h-screen bg-custom text-white main-page-content" class:content-visible={contentVisible} class:content-hidden={!contentVisible}>
+    <!-- Mobile Hamburger Button -->
+    <button class="hamburger-btn" on:click={toggleSidebar} aria-label="Toggle navigation">
+      <span class="hamburger-line" class:open={sidebarOpen}></span>
+      <span class="hamburger-line" class:open={sidebarOpen}></span>
+      <span class="hamburger-line" class:open={sidebarOpen}></span>
+    </button>
+
+    <!-- Mobile Overlay -->
+    {#if sidebarOpen}
+      <div class="mobile-overlay" on:click={toggleSidebar}></div>
+    {/if}
+
     <div class="docs-container">
-      <div class="sidebar">
+      <div class="sidebar" class:sidebar-open={sidebarOpen}>
         <div class="medium-font font-courier" tabindex="0" on:click={handleBack} on:keydown={(e) => e.key === 'Enter' && handleBack()} aria-label="Back to Simple-Agent">Documentation</div>
         
         <nav class="sidebar-nav">
@@ -89,182 +225,61 @@
       </div>
       
       <div class="main-content">
-        <div class="docs-content">
-          <div id="quick-start" class="docs-section">
-            <h2>Quick Start Guide</h2>
-            <p>Get reagent up and running in minutes with this step-by-step guide.</p>
-            
-            <div id="clone-repo" class="subsection">
-              <h3>1. Clone Repository</h3>
-              <div class="code-block">
-git clone https://github.com/reagent-systems/reagent.git
-cd reagent
-              </div>
-            </div>
+        <!-- Connection Status Bar -->
+        <div class="status-bar">
+          <div class="status-indicator" class:connected={connectionStatus === 'connected'} 
+               class:connecting={connectionStatus === 'connecting'} 
+               class:error={connectionStatus === 'error' || connectionStatus === 'disconnected'}>
+          </div>
+          <span class="status-text">
+            {#if connectionStatus === 'connected'}
+              Connected to Agent
+            {:else if connectionStatus === 'connecting'}
+              Connecting...
+            {:else if connectionStatus === 'error'}
+              Connection Error
+            {:else}
+              Disconnected
+            {/if}
+          </span>
+        </div>
 
-            <div id="install-deps" class="subsection">
-              <h3>2. Install Dependencies</h3>
-              <div class="code-block">
-pip install -r requirements.txt
+        <!-- Chat Container -->
+        <div class="chat-container">
+          <div class="messages-area" bind:this={messagesContainer}>
+            {#each messages as message}
+              <div class="message {message.type}">
+                <div class="message-content">
+                  <div class="message-text">{message.content}</div>
+                  <div class="message-time">
+                    {message.timestamp.toLocaleTimeString()}
+                  </div>
+                </div>
               </div>
-            </div>
-
-            <div id="configure-env" class="subsection">
-              <h3>3. Configure Environment</h3>
-              <div class="code-block">
-cp .env.example .env
-# Edit .env with your API keys
-              </div>
-            </div>
-
-            <div id="run-agent" class="subsection">
-              <h3>4. Run Agent</h3>
-              <div class="code-block">
-python SimpleAgent.py -a 10 "Your task here"
-              </div>
-            </div>
+            {/each}
           </div>
 
-          <div id="installation" class="docs-section">
-            <h2>Installation</h2>
-            
-            <div id="system-requirements" class="subsection">
-              <h3>System Requirements</h3>
-              <p><strong>Python 3.8+</strong> - Required for core functionality</p>
-              <p><strong>4GB RAM</strong> - Minimum recommended memory</p>
-              <p><strong>1GB Storage</strong> - For installation and workspace</p>
-            </div>
-
-            <div id="installation-methods" class="subsection">
-              <h3>Installation Methods</h3>
-              
-              <h4>From Source (Recommended)</h4>
-              <div class="code-block">
-git clone https://github.com/reagent-systems/reagent.git
-cd reagent
-pip install -r requirements.txt
-              </div>
-              
-              <h4>Docker</h4>
-              <div class="code-block">
-docker pull reagent/reagent:latest
-docker run -it reagent/reagent
-              </div>
-            </div>
-          </div>
-
-          <div id="configuration" class="docs-section">
-            <h2>Configuration</h2>
-            
-            <div id="environment-variables" class="subsection">
-              <h3>Environment Variables</h3>
-              
-              <p><strong>OPENAI_API_KEY</strong> - Your OpenAI API key for GPT models (Required)</p>
-              <p><strong>GEMINI_API_KEY</strong> - Google Gemini API key (Optional)</p>
-              <p><strong>LM_STUDIO_URL</strong> - LM Studio server URL for local models (Optional)</p>
-              <p><strong>GITHUB_TOKEN</strong> - GitHub personal access token (Optional)</p>
-            </div>
-
-            <div id="example-env" class="subsection">
-              <h3>Example .env File</h3>
-              <div class="code-block">
-# AI Provider Configuration
-OPENAI_API_KEY=your_openai_api_key_here
-GEMINI_API_KEY=your_gemini_api_key_here
-LM_STUDIO_URL=http://localhost:1234
-
-# GitHub Integration
-GITHUB_TOKEN=your_github_token_here
-
-# Agent Configuration
-MAX_STEPS=15
-AUTO_CONTINUE_STEPS=10
-TOOLS_REPO_URL=https://github.com/reagent-systems/reagent-tools
-
-# Web Interface
-SECRET_KEY=your_secret_key_here
-WEBSOCKET_URL=ws://localhost:8765
-              </div>
-            </div>
-          </div>
-
-          <div id="api-reference" class="docs-section">
-            <h2>API Reference</h2>
-            
-            <div id="rest-endpoints" class="subsection">
-              <h3>REST API Endpoints</h3>
-              
-              <div class="endpoint">
-                <div class="method">GET</div>
-                <div class="url">/api/status</div>
-                <div class="description">Get system status and health information</div>
-              </div>
-              
-              <div class="endpoint">
-                <div class="method">POST</div>
-                <div class="url">/api/agent/execute</div>
-                <div class="description">Execute a command through the agent</div>
-              </div>
-              
-              <div class="endpoint">
-                <div class="method">GET</div>
-                <div class="url">/api/files</div>
-                <div class="description">List generated files</div>
-              </div>
-              
-              <div class="endpoint">
-                <div class="method">GET</div>
-                <div class="url">/api/tools</div>
-                <div class="description">Get available tools and commands</div>
-              </div>
-            </div>
-
-            <div id="websocket-events" class="subsection">
-              <h3>WebSocket Events</h3>
-              
-              <p><strong>agent_response</strong> - Receive agent responses and status updates</p>
-              <p><strong>step_update</strong> - Real-time step execution updates</p>
-              <p><strong>file_created</strong> - Notification when files are created</p>
-              <p><strong>error</strong> - Error messages and exceptions</p>
-            </div>
-          </div>
-
-          <div id="examples" class="docs-section">
-            <h2>Examples</h2>
-            
-            <div id="python-script" class="subsection">
-              <h3>Create a Python Script</h3>
-              <div class="code-block">
-python SimpleAgent.py -a 5 "Create a Python script that calculates the Fibonacci sequence up to n=20 and saves it to fibonacci.py"
-              </div>
-            </div>
-
-            <div id="web-research" class="subsection">
-              <h3>Web Research</h3>
-              <div class="code-block">
-python SimpleAgent.py -a 10 "Research the latest developments in AI and create a summary report"
-              </div>
-            </div>
-
-            <div id="data-analysis" class="subsection">
-              <h3>Data Analysis</h3>
-              <div class="code-block">
-python SimpleAgent.py -a 15 "Analyze the CSV file data.csv and create visualizations showing trends"
-              </div>
-            </div>
-
-            <div id="github-operations" class="subsection">
-              <h3>GitHub Operations</h3>
-              <div class="code-block">
-python SimpleAgent.py -a 8 "Clone the repository user/repo and analyze its structure"
-              </div>
-            </div>
-          </div>
+          <!-- Input Area -->
+          <form class="input-container" on:submit|preventDefault={handleSubmit}>
+            <input
+              type="text"
+              bind:value={inputValue}
+              placeholder="Type your message to the agent..."
+              class="message-input"
+              disabled={connectionStatus !== 'connected'}
+            />
+            <button 
+              type="submit" 
+              class="send-button"
+              disabled={!inputValue.trim() || connectionStatus !== 'connected'}
+            >
+              Send
+            </button>
+          </form>
         </div>
       </div>
     </div>
   </div>
-{/if}
 
 <style>
   .loading-container {
@@ -284,6 +299,10 @@ python SimpleAgent.py -a 8 "Clone the repository user/repo and analyze its struc
   .loading-container.hidden {
     opacity: 0;
     pointer-events: none;
+  }
+
+  .loading-container.loading-fade-out {
+    transition: opacity 1.2s cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   .font-courier {
@@ -321,6 +340,21 @@ python SimpleAgent.py -a 8 "Clone the repository user/repo and analyze its struc
   }
   .text-white {
     color: white;
+  }
+
+  /* Main content fade animation */
+  .main-page-content {
+    transition: opacity 1.2s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .content-hidden {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .content-visible {
+    opacity: 1;
+    pointer-events: auto;
   }
   .docs-container {
     max-width: 1400px;
@@ -384,116 +418,326 @@ python SimpleAgent.py -a 8 "Clone the repository user/repo and analyze its struc
   .main-content {
     flex: 1;
     min-width: 0;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
   }
-  .docs-content {
-    font-family: 'Courier New', Courier, monospace;
-    font-size: 1.1rem;
-    line-height: 1.8;
-    text-align: justify;
-    margin-top: 2rem;
-  }
-  .docs-section {
-    margin-bottom: 3rem;
-    scroll-margin-top: 2rem;
-  }
-  .docs-section h2 {
-    font-size: 1.5rem;
-    margin-bottom: 1rem;
-    color: #fff;
-  }
-  .subsection {
-    margin-bottom: 2rem;
-    padding-left: 1rem;
-    border-left: 2px solid #333;
-  }
-  .subsection h3 {
-    font-size: 1.3rem;
-    margin-bottom: 0.75rem;
-    color: #fff;
-  }
-  .subsection h4 {
-    font-size: 1.1rem;
-    margin-bottom: 0.5rem;
-    color: #fff;
-  }
-  .code-block {
+
+  /* Status Bar */
+  .status-bar {
+    display: flex;
+    align-items: center;
+    padding: 1rem 2rem;
     background: #1a1a1a;
-    border: 1px solid #333;
-    padding: 1rem;
-    margin: 1rem 0;
-    font-family: 'Courier New', Courier, monospace;
-    font-size: 0.9rem;
-    overflow-x: auto;
-  }
-  .endpoint {
-    background: #1a1a1a;
-    border: 1px solid #333;
-    padding: 0.5rem;
-    margin: 0.5rem 0;
+    border-bottom: 1px solid #333;
     font-family: 'Courier New', Courier, monospace;
     font-size: 0.9rem;
   }
-  .endpoint .method {
-    color: #00ff00;
-    font-weight: bold;
+
+  .status-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 0.5rem;
+    background: #666;
   }
-  .endpoint .url {
-    color: #fff;
+
+  .status-indicator.connected {
+    background: #00ff00;
   }
-  .endpoint .description {
+
+  .status-indicator.connecting {
+    background: #ffaa00;
+    animation: pulse 1.5s infinite;
+  }
+
+  .status-indicator.error {
+    background: #ff4444;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  .status-text {
     color: #ccc;
-    font-size: 0.8rem;
-    margin-top: 0.25rem;
   }
+
+  /* Chat Container */
+  .chat-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .messages-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  /* Messages */
+  .message {
+    display: flex;
+    max-width: 80%;
+  }
+
+  .message.user {
+    align-self: flex-end;
+  }
+
+  .message.assistant {
+    align-self: flex-start;
+  }
+
+  .message.system {
+    align-self: center;
+    max-width: 60%;
+  }
+
+  .message-content {
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 8px;
+    padding: 1rem;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 0.9rem;
+    line-height: 1.4;
+  }
+
+  .message.user .message-content {
+    background: #333;
+    border-color: #555;
+  }
+
+  .message.system .message-content {
+    background: #2a1a1a;
+    border-color: #444;
+    text-align: center;
+    font-style: italic;
+    color: #aaa;
+  }
+
+  .message-text {
+    color: white;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+
+  .message-time {
+    font-size: 0.7rem;
+    color: #666;
+    margin-top: 0.5rem;
+    text-align: right;
+  }
+
+  .message.system .message-time {
+    text-align: center;
+  }
+
+  /* Input Area */
+  .input-container {
+    display: flex;
+    gap: 1rem;
+    padding: 2rem;
+    background: #0F0F0F;
+    border-top: 1px solid #333;
+  }
+
+  .message-input {
+    flex: 1;
+    padding: 1rem 1.5rem;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 8px;
+    color: white;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 0.9rem;
+    outline: none;
+    transition: border-color 0.2s ease;
+  }
+
+  .message-input:focus {
+    border-color: #555;
+  }
+
+  .message-input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .message-input::placeholder {
+    color: #666;
+  }
+
+  .send-button {
+    padding: 1rem 2rem;
+    background: #333;
+    border: 1px solid #555;
+    border-radius: 8px;
+    color: white;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .send-button:hover:not(:disabled) {
+    background: #444;
+    border-color: #666;
+  }
+
+  .send-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* Hamburger Menu Styles */
+  .hamburger-btn {
+    display: none;
+    position: fixed;
+    top: 1rem;
+    left: 1rem;
+    z-index: 1001;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 0.5rem;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+  }
+
+  .hamburger-btn:hover {
+    background: #333;
+  }
+
+  .hamburger-line {
+    display: block;
+    width: 20px;
+    height: 2px;
+    background: white;
+    margin: 3px 0;
+    transition: all 0.3s cubic-bezier(0.4,0,0.2,1);
+    transform-origin: center;
+  }
+
+  .hamburger-line.open:nth-child(1) {
+    transform: rotate(45deg) translate(5px, 5px);
+  }
+
+  .hamburger-line.open:nth-child(2) {
+    opacity: 0;
+  }
+
+  .hamburger-line.open:nth-child(3) {
+    transform: rotate(-45deg) translate(7px, -6px);
+  }
+
+  /* Mobile Overlay */
+  .mobile-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 999;
+  }
+
   @media (max-width: 1024px) {
+    .hamburger-btn {
+      display: block;
+    }
+
+    .mobile-overlay {
+      display: block;
+    }
     .docs-container {
       flex-direction: column;
       gap: 2rem;
       padding: 2rem 1rem;
+      padding-top: 4rem; /* Account for hamburger button */
     }
     .sidebar {
-      width: 100%;
-      position: static;
+      position: fixed;
+      top: 0;
+      left: -280px; /* Hide off-screen by default */
+      width: 280px;
+      height: 100vh;
+      background: #0F0F0F;
+      border-right: 1px solid #333;
+      padding: 4rem 2rem 2rem 2rem; /* Extra top padding for hamburger */
+      overflow-y: auto;
+      transition: left 0.3s cubic-bezier(0.4,0,0.2,1);
+      z-index: 1000;
     }
-    .sidebar-nav {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 1rem;
+    .sidebar.sidebar-open {
+      left: 0; /* Slide in when open */
     }
-    .sidebar-nav ul {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 1rem;
-    }
-    .sidebar-nav li {
-      margin-bottom: 0;
-    }
-    .sidebar-nav a {
-      border-left: none;
-      border-bottom: 2px solid transparent;
-      padding-left: 0;
-      padding-bottom: 0.25rem;
-    }
-    .sidebar-nav a:hover,
-    .sidebar-nav a.active {
-      border-left-color: transparent;
-      border-bottom-color: #fff;
-    }
-    .sidebar-nav .subsection-link {
-      padding-left: 0;
-      padding-bottom: 0.15rem;
-    }
+          .sidebar-nav {
+        display: block; /* Reset to block for vertical sidebar */
+      }
+      .sidebar-nav ul {
+        display: block; /* Reset to block for vertical sidebar */
+      }
+      .sidebar-nav li {
+        margin-bottom: 0.75rem; /* Restore original spacing */
+      }
+      .sidebar-nav a {
+        border-left: 2px solid transparent; /* Restore left border */
+        border-bottom: none;
+        padding-left: 1rem; /* Restore left padding */
+        padding-bottom: 0.5rem;
+      }
+      .sidebar-nav a:hover,
+      .sidebar-nav a.active {
+        border-left-color: #fff; /* Restore left border behavior */
+        border-bottom-color: transparent;
+      }
+      .sidebar-nav .subsection-link {
+        padding-left: 2rem; /* Restore subsection indentation */
+        padding-bottom: 0.5rem;
+      }
   }
-  @media (max-width: 768px) {
-    .docs-content {
-      font-size: 1rem;
-      line-height: 1.6;
-    }
-    .sidebar-nav {
-      flex-direction: column;
-    }
-    .sidebar-nav ul {
-      flex-direction: column;
-    }
-  }
+     @media (max-width: 768px) {
+     .docs-container {
+       padding: 1rem;
+       padding-top: 4rem; /* Account for hamburger button */
+     }
+     .sidebar {
+       width: 100%; /* Full width on very small screens */
+       left: -100%; /* Hide completely off-screen */
+     }
+     .sidebar.sidebar-open {
+       left: 0;
+     }
+     .status-bar {
+       padding: 0.75rem 1rem;
+       font-size: 0.8rem;
+     }
+     .messages-area {
+       padding: 1rem;
+     }
+     .input-container {
+       padding: 1rem;
+       gap: 0.5rem;
+     }
+     .message {
+       max-width: 90%;
+     }
+     .message-content {
+       padding: 0.75rem;
+       font-size: 0.8rem;
+     }
+     .send-button {
+       padding: 1rem 1.5rem;
+       font-size: 0.8rem;
+     }
+   }
 </style>
