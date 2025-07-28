@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { goto } from '$app/navigation';
   import Tetrahedron from '$lib/Tetrahedron.svelte';
 
   let isLoading = true;
@@ -11,8 +10,13 @@
   let messages: Array<{type: 'user' | 'assistant' | 'system', content: string, timestamp: Date}> = [];
   let inputValue = '';
   let websocket: WebSocket | null = null;
+  let summaryWebsocket: WebSocket | null = null;
   let connectionStatus: 'connecting' | 'connected' | 'disconnected' | 'error' = 'disconnected';
+  let summaryContent = 'Chat summary will appear here as you converse...';
   let messagesContainer: HTMLElement | undefined;
+  let connectionAttempts = 0;
+  const MAX_CONNECTION_ATTEMPTS = 3;
+  let isClearing = false;
 
   // WebSocket URL - replace with your actual Cloud Run function URL
   // Example: 'wss://reagent-agent-123abc-uc.a.run.app/ws'
@@ -37,6 +41,12 @@
       setTimeout(() => {
         isLoading = false;
         initializeWebSocket();
+        // Ensure scroll to bottom when chat appears
+        requestAnimationFrame(() => {
+          if (messagesContainer) {
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+          }
+        });
       }, 1400);
     }, 2000);
 
@@ -44,17 +54,42 @@
       if (websocket) {
         websocket.close();
       }
+      if (summaryWebsocket) {
+        summaryWebsocket.close();
+      }
     };
   });
 
   function initializeWebSocket() {
+    if (connectionAttempts >= MAX_CONNECTION_ATTEMPTS) {
+      connectionStatus = 'error';
+              addMessage('assistant', 'Failed to connect after 3 attempts. Using demo mode. Type "retry" to attempt connection again.');
+      // Fallback to demo mode after max attempts
+      setTimeout(() => {
+        connectionStatus = 'connected';
+        addMessage('assistant', 'Demo mode: I\'m a simulated agent for testing. Try sending me a message!');
+      }, 1000);
+      return;
+    }
+
     try {
+      connectionAttempts++;
       connectionStatus = 'connecting';
+      
+      if (connectionAttempts > 1) {
+        addMessage('assistant', `Attempting to connect... (${connectionAttempts}/${MAX_CONNECTION_ATTEMPTS})`);
+      }
+      
       websocket = new WebSocket(WS_URL);
+      
+      // Also connect to summary WebSocket
+      const SUMMARY_WS_URL = WS_URL.replace('/ws', '/summary');
+      summaryWebsocket = new WebSocket(SUMMARY_WS_URL);
 
       websocket.onopen = () => {
         connectionStatus = 'connected';
-        addSystemMessage('Connected to agent. How can I help you today?');
+        connectionAttempts = 0; // Reset on successful connection
+        addMessage('assistant', 'Connected to agent. How can I help you today?');
       };
 
       websocket.onmessage = (event) => {
@@ -67,48 +102,90 @@
       };
 
       websocket.onclose = () => {
-        connectionStatus = 'disconnected';
-        addSystemMessage('Connection lost. Attempting to reconnect...');
-        setTimeout(initializeWebSocket, 3000);
+        if (connectionAttempts < MAX_CONNECTION_ATTEMPTS) {
+          connectionStatus = 'disconnected';
+          addMessage('assistant', 'Connection lost. Attempting to reconnect...');
+          setTimeout(initializeWebSocket, 3000);
+        } else {
+          connectionStatus = 'error';
+          addMessage('assistant', 'Failed to reconnect after 3 attempts. Using demo mode. Type "retry" to attempt connection again.');
+          setTimeout(() => {
+            connectionStatus = 'connected';
+            addMessage('assistant', 'Demo mode: I\'m a simulated agent for testing. Try sending me a message!');
+          }, 1000);
+        }
       };
 
       websocket.onerror = () => {
         connectionStatus = 'error';
-        addSystemMessage('Connection error. Please check your internet connection.');
+        if (connectionAttempts < MAX_CONNECTION_ATTEMPTS) {
+          addMessage('assistant', 'Connection error. Please check your internet connection.');
+        }
       };
+
+      // Summary WebSocket handlers
+      summaryWebsocket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          summaryContent = data.summary || data.content || event.data;
+        } catch (e) {
+          summaryContent = event.data;
+        }
+      };
+
     } catch (error) {
       connectionStatus = 'error';
-      addSystemMessage('Failed to connect to agent. Using demo mode.');
-      // Fallback to demo mode for development
-      setTimeout(() => {
-        connectionStatus = 'connected';
-        addSystemMessage('Demo mode: I\'m a simulated agent for testing. Try sending me a message!');
-      }, 1000);
+      if (connectionAttempts < MAX_CONNECTION_ATTEMPTS) {
+        addMessage('assistant', 'Failed to connect to agent. Retrying...');
+        setTimeout(initializeWebSocket, 3000);
+      } else {
+        addMessage('assistant', 'Failed to connect after 3 attempts. Using demo mode. Type "retry" to attempt connection again.');
+        setTimeout(() => {
+          connectionStatus = 'connected';
+          addMessage('assistant', 'Demo mode: I\'m a simulated agent for testing. Try sending me a message!');
+        }, 1000);
+      }
     }
   }
 
   function addMessage(type: 'user' | 'assistant', content: string) {
     messages = [...messages, { type, content, timestamp: new Date() }];
-    setTimeout(scrollToBottom, 100);
+    // Use requestAnimationFrame for smoother scrolling
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (messagesContainer) {
+          messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+      });
+    });
   }
 
-  function addSystemMessage(content: string) {
-    messages = [...messages, { type: 'system', content, timestamp: new Date() }];
-    setTimeout(scrollToBottom, 100);
+  function retryConnection() {
+    connectionAttempts = 0; // Reset attempts
+    connectionStatus = 'disconnected';
+    addMessage('assistant', 'Retrying connection...');
+    setTimeout(initializeWebSocket, 1000);
   }
+
+
 
   function scrollToBottom() {
     if (messagesContainer) {
-      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      // Force scroll to absolute bottom
+      setTimeout(() => {
+        if (messagesContainer) {
+          messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+      }, 10);
     }
   }
 
   function handleSubmit() {
-    if (inputValue.trim() && connectionStatus === 'connected') {
+    if (inputValue.trim()) {
       const message = inputValue.trim();
       addMessage('user', message);
       
-      if (websocket && websocket.readyState === WebSocket.OPEN) {
+      if (websocket && websocket.readyState === WebSocket.OPEN && connectionStatus === 'connected') {
         // Send message to WebSocket
         websocket.send(JSON.stringify({ 
           type: 'message', 
@@ -116,43 +193,67 @@
           timestamp: new Date().toISOString()
         }));
       } else {
-        // Demo mode response
-        setTimeout(() => {
-          const demoResponses = [
-            "I understand your request. In a real implementation, I would process this through the cloud backend.",
-            "This is a demo response. Your message would be sent to the Cloud Run function via WebSocket.",
-            "Great question! The actual agent would analyze this and provide a detailed response.",
-            "In the live version, I would execute tasks, search the web, or generate code based on your request.",
-            "Demo mode: Your message has been received. The real agent would take action on this."
-          ];
-          const randomResponse = demoResponses[Math.floor(Math.random() * demoResponses.length)];
-          addMessage('assistant', randomResponse);
-        }, 1000 + Math.random() * 2000); // Random delay between 1-3 seconds
+        // Check for retry command
+        if (message.toLowerCase() === 'retry') {
+          retryConnection();
+        } else {
+          // Demo mode response (works regardless of connection status)
+          setTimeout(() => {
+            const demoResponses = [
+              "I understand your request. In a real implementation, I would process this through the cloud backend.",
+              "This is a demo response. Your message would be sent to the Cloud Run function via WebSocket.",
+              "Great question! The actual agent would analyze this and provide a detailed response.",
+              "In the live version, I would execute tasks, search the web, or generate code based on your request.",
+              "Demo mode: Your message has been received. The real agent would take action on this."
+            ];
+            const randomResponse = demoResponses[Math.floor(Math.random() * demoResponses.length)];
+            addMessage('assistant', randomResponse);
+          }, 1000 + Math.random() * 2000); // Random delay between 1-3 seconds
+        }
       }
       
+      // Clear input without triggering auto-resize
+      isClearing = true;
       inputValue = '';
-    } else if (connectionStatus !== 'connected') {
-      addSystemMessage('Not connected to agent. Please wait for connection to be established.');
+      
+      // Reset height manually and clear flag
+      setTimeout(() => {
+        const textarea = document.querySelector('.message-input-field') as HTMLTextAreaElement;
+        if (textarea) {
+          textarea.style.height = '1.5em';
+        }
+        isClearing = false;
+      }, 0);
     }
   }
 
-  function handleBack() {
-    goto('/simple-agent');
-  }
 
-  function scrollToSection(sectionId: string) {
-    const element = document.getElementById(sectionId);
-    if (element) {
-      element.scrollIntoView({ behavior: 'smooth' });
-    }
-    // Close sidebar on mobile after navigation
-    if (window.innerWidth <= 1024) {
-      sidebarOpen = false;
-    }
-  }
 
   function toggleSidebar() {
     sidebarOpen = !sidebarOpen;
+  }
+
+  function autoResize(event: Event) {
+    // Skip auto-resize if we're programmatically clearing
+    if (isClearing) return;
+    
+    const textarea = event.target as HTMLTextAreaElement;
+    // Reset height to get accurate scrollHeight
+    textarea.style.height = 'auto';
+    
+    // Only expand if there's content, otherwise keep at minimum
+    if (textarea.value.trim()) {
+      textarea.style.height = textarea.scrollHeight + 'px';
+    } else {
+      textarea.style.height = '1.5em'; // Minimum height when empty
+    }
+  }
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      handleSubmit();
+    }
   }
 </script>
 
@@ -179,74 +280,16 @@
 
     <div class="docs-container">
       <div class="sidebar" class:sidebar-open={sidebarOpen}>
-        <div class="medium-font font-courier" tabindex="0" on:click={handleBack} on:keydown={(e) => e.key === 'Enter' && handleBack()} aria-label="Back to Simple-Agent">Documentation</div>
+        <div class="sidebar-header">
+          <h3 class="font-courier">Chat Summary</h3>
+        </div>
         
-        <nav class="sidebar-nav">
-          <h3>Contents</h3>
-          <ul>
-            <li>
-              <a on:click={() => scrollToSection('quick-start')}>Quick Start Guide</a>
-              <ul>
-                <li><a class="subsection-link" on:click={() => scrollToSection('clone-repo')}>Clone Repository</a></li>
-                <li><a class="subsection-link" on:click={() => scrollToSection('install-deps')}>Install Dependencies</a></li>
-                <li><a class="subsection-link" on:click={() => scrollToSection('configure-env')}>Configure Environment</a></li>
-                <li><a class="subsection-link" on:click={() => scrollToSection('run-agent')}>Run Agent</a></li>
-              </ul>
-            </li>
-            <li>
-              <a on:click={() => scrollToSection('installation')}>Installation</a>
-              <ul>
-                <li><a class="subsection-link" on:click={() => scrollToSection('system-requirements')}>System Requirements</a></li>
-                <li><a class="subsection-link" on:click={() => scrollToSection('installation-methods')}>Installation Methods</a></li>
-              </ul>
-            </li>
-            <li>
-              <a on:click={() => scrollToSection('configuration')}>Configuration</a>
-              <ul>
-                <li><a class="subsection-link" on:click={() => scrollToSection('environment-variables')}>Environment Variables</a></li>
-                <li><a class="subsection-link" on:click={() => scrollToSection('example-env')}>Example .env File</a></li>
-              </ul>
-            </li>
-            <li>
-              <a on:click={() => scrollToSection('api-reference')}>API Reference</a>
-              <ul>
-                <li><a class="subsection-link" on:click={() => scrollToSection('rest-endpoints')}>REST API Endpoints</a></li>
-                <li><a class="subsection-link" on:click={() => scrollToSection('websocket-events')}>WebSocket Events</a></li>
-              </ul>
-            </li>
-            <li>
-              <a on:click={() => scrollToSection('examples')}>Examples</a>
-              <ul>
-                <li><a class="subsection-link" on:click={() => scrollToSection('python-script')}>Create a Python Script</a></li>
-                <li><a class="subsection-link" on:click={() => scrollToSection('web-research')}>Web Research</a></li>
-                <li><a class="subsection-link" on:click={() => scrollToSection('data-analysis')}>Data Analysis</a></li>
-                <li><a class="subsection-link" on:click={() => scrollToSection('github-operations')}>GitHub Operations</a></li>
-              </ul>
-            </li>
-          </ul>
-        </nav>
+        <div class="summary-content">
+          <p class="summary-text">{summaryContent}</p>
+        </div>
       </div>
       
       <div class="main-content">
-        <!-- Connection Status Bar -->
-        <div class="status-bar">
-          <div class="status-indicator" class:connected={connectionStatus === 'connected'} 
-               class:connecting={connectionStatus === 'connecting'} 
-               class:error={connectionStatus === 'error' || connectionStatus === 'disconnected'}>
-          </div>
-          <span class="status-text">
-            {#if connectionStatus === 'connected'}
-              Connected to Agent
-            {:else if connectionStatus === 'connecting'}
-              Connecting...
-            {:else if connectionStatus === 'error'}
-              Connection Error
-            {:else}
-              Disconnected
-            {/if}
-          </span>
-        </div>
-
         <!-- Chat Container -->
         <div class="chat-container">
           <div class="messages-area" bind:this={messagesContainer}>
@@ -261,24 +304,29 @@
               </div>
             {/each}
           </div>
-
-          <!-- Input Area -->
-          <form class="input-container" on:submit|preventDefault={handleSubmit}>
-            <input
-              type="text"
-              bind:value={inputValue}
-              placeholder="Type your message to the agent..."
-              class="message-input"
-              disabled={connectionStatus !== 'connected'}
-            />
-            <button 
-              type="submit" 
-              class="send-button"
-              disabled={!inputValue.trim() || connectionStatus !== 'connected'}
-            >
-              Send
-            </button>
-          </form>
+          
+          <!-- Input Footer - Fixed at bottom -->
+          <div class="chat-input-footer">
+            <div class="message user input-message">
+              <form class="message-content input-form" on:submit|preventDefault={handleSubmit}>
+                <textarea
+                  bind:value={inputValue}
+                  placeholder="Type your message to the agent..."
+                  class="message-input-field"
+                  rows="1"
+                  on:input={autoResize}
+                  on:keydown={handleKeydown}
+                ></textarea>
+                <button 
+                  type="submit" 
+                  class="send-button-inline"
+                  disabled={!inputValue.trim()}
+                >
+                  →
+                </button>
+              </form>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -362,9 +410,14 @@
   .docs-container {
     max-width: 1400px;
     margin: 0 auto;
-    padding: 4rem 2rem;
+    padding: 2rem;
     display: flex;
     gap: 4rem;
+    height: 100vh;
+    max-height: 100vh;
+    box-sizing: border-box;
+    overflow: hidden;
+    background: #0F0F0F;
   }
   .sidebar {
     width: 250px;
@@ -372,6 +425,7 @@
     position: sticky;
     top: 2rem;
     height: fit-content;
+    background: #0F0F0F;
   }
   .sidebar-nav {
     font-family: 'Courier New', Courier, monospace;
@@ -423,65 +477,56 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    height: 100vh;
+    height: 100%;
+    max-height: 100%;
+    overflow: hidden;
+    background: #0F0F0F;
   }
 
-  /* Status Bar */
-  .status-bar {
-    display: flex;
-    align-items: center;
-    padding: 1rem 2rem;
-    background: #1a1a1a;
-    border-bottom: 1px solid #333;
-    font-family: 'Courier New', Courier, monospace;
-    font-size: 0.9rem;
-  }
 
-  .status-indicator {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    margin-right: 0.5rem;
-    background: #666;
-  }
-
-  .status-indicator.connected {
-    background: #00ff00;
-  }
-
-  .status-indicator.connecting {
-    background: #ffaa00;
-    animation: pulse 1.5s infinite;
-  }
-
-  .status-indicator.error {
-    background: #ff4444;
-  }
-
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
-  }
-
-  .status-text {
-    color: #ccc;
-  }
 
   /* Chat Container */
   .chat-container {
     flex: 1;
     display: flex;
     flex-direction: column;
-    min-height: 0;
+    height: 100%;
+    max-height: 100%;
+    overflow: hidden;
+    background: #0F0F0F;
+  }
+
+  /* Chat Input Footer */
+  .chat-input-footer {
+    flex-shrink: 0;
+    padding: 1rem 2rem 2rem;
+    background: #0F0F0F;
+    border-top: 1px solid #333;
   }
 
   .messages-area {
     flex: 1;
     overflow-y: auto;
-    padding: 2rem;
+    padding: 2rem 2rem 1rem;
     display: flex;
     flex-direction: column;
     gap: 1rem;
+    min-height: 0;
+    background: #0F0F0F;
+    /* Hide scrollbar */
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE and Edge */
+  }
+
+  /* Ensure messages start from bottom when container not full */
+  .messages-area::before {
+    content: '';
+    flex: 1;
+    min-height: 0;
+  }
+
+  .messages-area::-webkit-scrollbar {
+    display: none; /* Chrome, Safari and Opera */
   }
 
   /* Messages */
@@ -492,6 +537,14 @@
 
   .message.user {
     align-self: flex-end;
+    max-width: 90%; /* Make user messages wider */
+  }
+
+  /* Input message in footer - full width */
+  .chat-input-footer .message.user.input-message {
+    max-width: 100% !important;
+    width: 100%;
+    margin: 0; /* Remove any margins in footer */
   }
 
   .message.assistant {
@@ -504,32 +557,30 @@
   }
 
   .message-content {
-    background: #1a1a1a;
+    background: transparent;
     border: 1px solid #333;
-    border-radius: 8px;
     padding: 1rem;
     font-family: 'Courier New', Courier, monospace;
     font-size: 0.9rem;
     line-height: 1.4;
+    width: 100%;
+    min-width: 0; /* Allow flex shrinking */
+    overflow-wrap: break-word;
+    word-break: break-word;
   }
 
   .message.user .message-content {
-    background: #333;
+    background: transparent;
     border-color: #555;
-  }
-
-  .message.system .message-content {
-    background: #2a1a1a;
-    border-color: #444;
-    text-align: center;
-    font-style: italic;
-    color: #aaa;
   }
 
   .message-text {
     color: white;
     white-space: pre-wrap;
     word-wrap: break-word;
+    overflow-wrap: break-word;
+    word-break: break-word;
+    max-width: 100%;
   }
 
   .message-time {
@@ -539,65 +590,96 @@
     text-align: right;
   }
 
-  .message.system .message-time {
-    text-align: center;
-  }
-
-  /* Input Area */
-  .input-container {
+  /* Input Area - Message Style */
+  .input-form {
     display: flex;
-    gap: 1rem;
-    padding: 2rem;
-    background: #0F0F0F;
-    border-top: 1px solid #333;
+    align-items: flex-start;
+    gap: 0.5rem;
+    margin: 0;
+    padding: 1rem;
+    width: 100%; /* Force full width */
   }
 
-  .message-input {
+  /* Force input message content to be full width */
+  .message.user.input-message .message-content {
+    width: 100% !important;
+  }
+
+  .message-input-field {
     flex: 1;
-    padding: 1rem 1.5rem;
-    background: #1a1a1a;
-    border: 1px solid #333;
-    border-radius: 8px;
+    background: transparent;
+    border: none;
     color: white;
     font-family: 'Courier New', Courier, monospace;
     font-size: 0.9rem;
     outline: none;
-    transition: border-color 0.2s ease;
+    resize: none;
+    overflow: hidden;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+    min-height: 1.5em;
+    height: 1.5em; /* Start at minimum height */
+    width: 100% !important;
+    line-height: 1.5;
   }
 
-  .message-input:focus {
-    border-color: #555;
-  }
-
-  .message-input:disabled {
+  .message-input-field:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
 
-  .message-input::placeholder {
-    color: #666;
+  .message-input-field::placeholder {
+    color: #aaa;
   }
 
-  .send-button {
-    padding: 1rem 2rem;
-    background: #333;
-    border: 1px solid #555;
-    border-radius: 8px;
+  .send-button-inline {
+    background: transparent;
+    border: none;
     color: white;
     font-family: 'Courier New', Courier, monospace;
-    font-size: 0.9rem;
+    font-size: 1.2rem;
     cursor: pointer;
-    transition: all 0.2s ease;
+    padding: 0.25rem 0.5rem;
+    transition: opacity 0.2s ease;
+    align-self: flex-start;
+    margin-top: 0.1rem; /* Slight adjustment to align with text */
   }
 
-  .send-button:hover:not(:disabled) {
-    background: #444;
-    border-color: #666;
+  .send-button-inline:hover:not(:disabled) {
+    opacity: 0.7;
   }
 
-  .send-button:disabled {
-    opacity: 0.5;
+  .send-button-inline:disabled {
+    opacity: 0.3;
     cursor: not-allowed;
+  }
+
+  /* Sidebar Summary Styling */
+  .sidebar-header {
+    padding: 2rem 2rem 1rem;
+    border-bottom: 1px solid #333;
+  }
+
+  .sidebar-header h3 {
+    font-size: 1.2rem;
+    color: #fff;
+    margin: 0;
+    font-weight: 300;
+  }
+
+  .summary-content {
+    padding: 2rem;
+    height: calc(100vh - 120px);
+    overflow-y: auto;
+  }
+
+  .summary-text {
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 0.9rem;
+    line-height: 1.6;
+    color: #ccc;
+    margin: 0;
+    white-space: pre-wrap;
   }
 
   /* Hamburger Menu Styles */
@@ -661,12 +743,16 @@
     .mobile-overlay {
       display: block;
     }
-    .docs-container {
-      flex-direction: column;
-      gap: 2rem;
-      padding: 2rem 1rem;
-      padding-top: 4rem; /* Account for hamburger button */
-    }
+         .docs-container {
+       flex-direction: column;
+       gap: 2rem;
+       padding: 1rem;
+       padding-top: 3rem; /* Account for hamburger button */
+       height: 100vh;
+       max-height: 100vh;
+       box-sizing: border-box;
+       overflow: hidden;
+     }
     .sidebar {
       position: fixed;
       top: 0;
@@ -710,8 +796,8 @@
   }
      @media (max-width: 768px) {
      .docs-container {
-       padding: 1rem;
-       padding-top: 4rem; /* Account for hamburger button */
+       padding: 0.5rem;
+       padding-top: 3rem; /* Account for hamburger button */
      }
      .sidebar {
        width: 100%; /* Full width on very small screens */
@@ -720,27 +806,36 @@
      .sidebar.sidebar-open {
        left: 0;
      }
-     .status-bar {
-       padding: 0.75rem 1rem;
-       font-size: 0.8rem;
-     }
+
      .messages-area {
        padding: 1rem;
      }
-     .input-container {
-       padding: 1rem;
-       gap: 0.5rem;
-     }
      .message {
        max-width: 90%;
+     }
+     .message.user {
+       max-width: 95%; /* Even wider on mobile for user messages */
+     }
+     .chat-input-footer .message.user.input-message {
+       max-width: 100% !important;
+       width: 100%;
+     }
+
+     .chat-input-footer {
+       padding: 0.75rem 1rem 1rem;
      }
      .message-content {
        padding: 0.75rem;
        font-size: 0.8rem;
      }
-     .send-button {
-       padding: 1rem 1.5rem;
+     .input-form {
+       padding: 0.75rem;
+     }
+     .message-input-field {
        font-size: 0.8rem;
+     }
+     .send-button-inline {
+       font-size: 1rem;
      }
    }
 </style>
