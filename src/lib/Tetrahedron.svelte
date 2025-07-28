@@ -10,17 +10,14 @@
   let camera: THREE.PerspectiveCamera;
   let renderer: THREE.WebGLRenderer;
   let tetrahedron: THREE.Mesh;
-  let concentricTriangles: THREE.Mesh[] = [];
   let tetraVertices: THREE.Vector3[] = [];
   let animationId: number;
-  let animationPhase: 'rotating' | 'positioning' | 'expanding' | 'revealing' | 'fading-out' = 'rotating';
+  let animationPhase: 'rotating' | 'positioning' | 'fading-out' = 'rotating';
   
   // Animation state
   let finishStartTime: number = 0;
-  let positioningDuration = 1000; // ms to rotate to downward-point position (longer for precise alignment)
-  let expandingDuration = 600; // ms for triangles to appear
-  let revealingDuration = 800; // ms for triangles to disappear layer by layer
-  let fadeOutDuration = 900; // ms to fade out everything
+  let positioningDuration = 800; // ms to rotate to optimal position
+  let fadeOutDuration = 600; // ms to fade out tetrahedron
 
   onMount(() => {
     // Scene setup
@@ -76,10 +73,7 @@
     
     scene.add(tetrahedron);
 
-    // Vertex indicators removed - alignment is now perfect
-
-    // Create concentric triangles (initially hidden)
-    createConcentricTriangles();
+    // Simplified animation - just tetrahedron rotation and positioning
 
     // Animation loop
     const animate = (currentTime: number) => {
@@ -91,9 +85,9 @@
         animationPhase = 'positioning';
       }
 
-      if (startLoadingFadeOut && animationPhase === 'revealing') {
+      if (startLoadingFadeOut) {
         // Start the fade-out sequence
-        finishStartTime = currentTime - positioningDuration - expandingDuration - revealingDuration;
+        finishStartTime = currentTime - positioningDuration;
         animationPhase = 'fading-out';
       }
 
@@ -135,47 +129,7 @@
     };
   });
 
-  function createConcentricTriangles() {
-    const triangleGeometry = new THREE.BufferGeometry();
-    
-    // Create a triangle
-    const vertices = new Float32Array([
-      0, 1, 0,      // top vertex
-      -0.866, -0.5, 0,  // bottom left
-      0.866, -0.5, 0    // bottom right
-    ]);
-    
-    triangleGeometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
-    
-    // Create multiple concentric triangles with different sizes to fill the screen
-    // Start from 3.5 to avoid misalignment with tetrahedron, add more for density
-    const scales = [3.5, 5, 7, 10, 13.5, 17.5, 22, 27.5, 34, 42, 52, 64, 78, 95, 115, 138, 165, 196, 232, 275, 325, 385];
-    
-    scales.forEach((scale, index) => {
-      const material = new THREE.MeshBasicMaterial({
-        color: 0xffffff,
-        wireframe: true,
-        transparent: true,
-        opacity: 0
-      });
-      
-      const triangle = new THREE.Mesh(triangleGeometry, material);
-      triangle.scale.setScalar(scale); // Set to final size immediately
-      triangle.rotation.z = Math.PI; // Rotate 180 degrees to point downward
-      
-      // Position triangles at final position (no movement during animation)
-      triangle.position.z = 0; // Place at same plane as tetrahedron
-      
-              triangle.userData = { 
-          originalScale: scale,
-          index: index,
-          targetOpacity: Math.max(0.08, 0.9 - index * 0.025) // Adjusted for 22 triangles
-        };
-      
-      scene.add(triangle);
-      concentricTriangles.push(triangle);
-    });
-  }
+  
 
   function handleFinishAnimation(elapsed: number) {
     if (animationPhase === 'positioning') {
@@ -250,92 +204,17 @@
        tetrahedron.rotation.y += (targetEuler.y - tetrahedron.rotation.y) * rotationSpeed;
        tetrahedron.rotation.z += (targetEuler.z - tetrahedron.rotation.z) * rotationSpeed;
       
-      if (progress >= 1) {
-        animationPhase = 'expanding';
-        finishStartTime += positioningDuration;
+            if (progress >= 1) {
+        // Positioning complete - tetrahedron is perfectly aligned
+        // Wait for fade-out signal from main component
       }
-         } else if (animationPhase === 'expanding') {
-       // Show concentric triangles in layers, one by one
-       const progress = Math.min((elapsed - positioningDuration) / expandingDuration, 1);
-       const easeOut = 1 - Math.pow(1 - progress, 2);
-       
-                       concentricTriangles.forEach((triangle, index) => {
-         // Stagger the appearance - smallest triangles appear first
-         const delay = index * 0.015; // Faster stagger for quicker appearance
-         const adjustedProgress = Math.max(0, Math.min(1, (progress - delay) / (1 - delay)));
-         
-         if (adjustedProgress > 0) {
-           // Simply fade in the triangle at full size and final position
-           const fadeEase = adjustedProgress * adjustedProgress * (3 - 2 * adjustedProgress); // Smoothstep for clean fade
-           (triangle.material as THREE.MeshBasicMaterial).opacity = triangle.userData.targetOpacity * fadeEase;
-           
-           // Keep triangles at their final position (no movement effect)
-           triangle.position.z = 0;
-         }
-       });
-       
-       // Fade out tetrahedron more gradually
-       (tetrahedron.material as THREE.MeshBasicMaterial).opacity = 0.8 * (1 - easeOut * 0.7);
-       
-       if (progress >= 1) {
-         animationPhase = 'revealing';
-         finishStartTime += expandingDuration;
-       }
-         } else if (animationPhase === 'revealing') {
-       // Fade out triangles layer by layer from outside to inside
-       const progress = Math.min((elapsed - positioningDuration - expandingDuration) / revealingDuration, 1);
-       
-       concentricTriangles.forEach((triangle, index) => {
-         // Calculate which layer this triangle is (larger index = outer layer)
-         const totalLayers = concentricTriangles.length;
-         const layerFromOutside = totalLayers - 1 - index; // 0 = outermost, max = innermost
-         
-         // Each layer takes a portion of the total time to fade
-         const layerDuration = 1.2 / totalLayers; // Slightly longer per layer
-         const layerStartTime = layerFromOutside * layerDuration * 0.7; // 70% overlap for smoother wave
-         const layerEndTime = layerStartTime + layerDuration;
-         
-         // Calculate fade progress for this specific layer
-         let layerProgress = 0;
-         if (progress > layerStartTime) {
-           if (progress < layerEndTime) {
-             layerProgress = (progress - layerStartTime) / layerDuration;
-           } else {
-             layerProgress = 1; // Fully faded
-           }
-         }
-         
-         if (layerProgress > 0) {
-           // Ease the fade for smooth disappearing
-           const fadeEase = layerProgress * layerProgress * (3 - 2 * layerProgress); // Smoothstep
-           const currentOpacity = triangle.userData.targetOpacity * (1 - fadeEase);
-           (triangle.material as THREE.MeshBasicMaterial).opacity = Math.max(0, currentOpacity);
-           
-           // Move triangles backward as they fade for depth effect
-           const moveBack = fadeEase * 1.0;
-           triangle.position.z = 0 - moveBack;
-         }
-              });
-       
-       // Keep container fully visible during triangle animation
-       // Container will fade when loading state ends in the main component
      } else if (animationPhase === 'fading-out') {
-      // Fade out everything smoothly
-      const progress = Math.min((elapsed - positioningDuration - expandingDuration - revealingDuration) / fadeOutDuration, 1);
+      // Fade out tetrahedron smoothly
+      const progress = Math.min((elapsed - positioningDuration) / fadeOutDuration, 1);
       const fadeEase = progress * progress * (3 - 2 * progress); // Smoothstep
       
-      // Fade out tetrahedron and axes
+      // Fade out tetrahedron
       (tetrahedron.material as THREE.MeshBasicMaterial).opacity = 0.8 * (1 - fadeEase);
-      
-      // Vertex indicators removed
-      
-      // Fade out any remaining triangles
-      concentricTriangles.forEach((triangle) => {
-        const currentOpacity = (triangle.material as THREE.MeshBasicMaterial).opacity;
-        if (currentOpacity > 0) {
-          (triangle.material as THREE.MeshBasicMaterial).opacity = currentOpacity * (1 - fadeEase);
-        }
-      });
       
       // Fade out the container itself
       if (container) {

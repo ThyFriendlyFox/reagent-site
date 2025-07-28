@@ -23,21 +23,21 @@
     setTimeout(() => {
       startFinishAnimation = true;
       
-      // Start fading out loading while triangles are still disappearing (adjusted for longer positioning)
+      // Start fading out after positioning completes (0.8s after finish animation starts)
       setTimeout(() => {
         startLoadingFadeOut = true;
-      }, 2400);
+      }, 800);
       
-      // Start fading in content slightly after loading fade begins
+      // Start fading in content slightly after fade begins (1.0s after finish animation starts)
       setTimeout(() => {
         contentVisible = true;
-      }, 2700);
+      }, 1000);
       
-      // Wait for fade transitions to complete (adjusted timing)
+      // Wait for fade out to complete (1.4s after finish animation starts = 3.4s total)
       setTimeout(() => {
         isLoading = false;
         initializeWebSocket();
-      }, 3400);
+      }, 1400);
     }, 2000);
 
     return () => {
