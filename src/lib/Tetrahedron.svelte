@@ -18,7 +18,7 @@
   
   // Animation state
   let finishStartTime: number = 0;
-  let positioningDuration = 600; // ms to rotate to downward-point position
+  let positioningDuration = 1000; // ms to rotate to downward-point position (longer for precise alignment)
   let expandingDuration = 600; // ms for triangles to appear
   let revealingDuration = 800; // ms for triangles to disappear layer by layer
   let fadeOutDuration = 900; // ms to fade out everything
@@ -207,9 +207,10 @@
        
        // Get current vertex directions in world space
        let closestDot = -2;
+       let closestVertexIndex = 0;
        let closestVertexDirection = tetraVertices[0];
        
-       tetraVertices.forEach(vertex => {
+       tetraVertices.forEach((vertex, index) => {
          const worldVertex = vertex.clone().applyEuler(
            new THREE.Euler(tetrahedron.rotation.x, tetrahedron.rotation.y, tetrahedron.rotation.z)
          );
@@ -217,20 +218,56 @@
          if (dot > closestDot) {
            closestDot = dot;
            closestVertexDirection = vertex;
+           closestVertexIndex = index;
          }
        });
        
-       // Calculate rotation to align closest vertex with camera direction
-       const targetQuaternion = new THREE.Quaternion().setFromUnitVectors(
+       // First, align closest vertex with camera direction
+       const primaryRotation = new THREE.Quaternion().setFromUnitVectors(
          closestVertexDirection.normalize(), 
          cameraDirection
        );
-       const targetEuler = new THREE.Euler().setFromQuaternion(targetQuaternion);
        
-       // Apply rotation with easing
-       tetrahedron.rotation.x += (targetEuler.x - tetrahedron.rotation.x) * easeOut * 0.1;
-       tetrahedron.rotation.y += (targetEuler.y - tetrahedron.rotation.y) * easeOut * 0.1;
-       tetrahedron.rotation.z += (targetEuler.z - tetrahedron.rotation.z) * easeOut * 0.1;
+       // Apply primary rotation to all vertices to see new orientations
+       const rotatedVertices = tetraVertices.map(vertex => 
+         vertex.clone().applyQuaternion(primaryRotation)
+       );
+       
+       // Find the lowermost vertex of the face opposite to the camera-aligned vertex
+       // (the 3 vertices that are NOT the camera-aligned vertex)
+       let lowestY = Infinity;
+       let lowestVertexDirection = rotatedVertices[0];
+       
+       rotatedVertices.forEach((vertex, index) => {
+         if (index !== closestVertexIndex) { // Skip the vertex already aligned to camera
+           if (vertex.y < lowestY) {
+             lowestY = vertex.y;
+             lowestVertexDirection = vertex;
+           }
+         }
+       });
+       
+       // Project the lowest vertex onto the camera plane (remove Z component)
+       const projectedVertex = new THREE.Vector3(lowestVertexDirection.x, lowestVertexDirection.y, 0).normalize();
+       
+       // Target: position this vertex at the bottom (negative Y direction)
+       const bottomTarget = new THREE.Vector3(0, -1, 0);
+       
+       // Calculate rotation around camera axis (Z-axis) to align projected vertex with bottom
+       const cameraAxisRotation = new THREE.Quaternion().setFromUnitVectors(
+         projectedVertex,
+         bottomTarget
+       );
+       
+       // Combine both rotations: first align vertex to camera, then rotate around camera axis
+       const finalRotation = new THREE.Quaternion().multiplyQuaternions(cameraAxisRotation, primaryRotation);
+       const targetEuler = new THREE.Euler().setFromQuaternion(finalRotation);
+       
+       // Apply rotation with stronger easing for precise alignment
+       const rotationSpeed = easeOut * 0.25; // Increased from 0.1 for faster convergence
+       tetrahedron.rotation.x += (targetEuler.x - tetrahedron.rotation.x) * rotationSpeed;
+       tetrahedron.rotation.y += (targetEuler.y - tetrahedron.rotation.y) * rotationSpeed;
+       tetrahedron.rotation.z += (targetEuler.z - tetrahedron.rotation.z) * rotationSpeed;
       
       if (progress >= 1) {
         animationPhase = 'expanding';
