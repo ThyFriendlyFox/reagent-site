@@ -11,7 +11,6 @@
   let renderer: THREE.WebGLRenderer;
   let tetrahedron: THREE.Mesh;
   let concentricTriangles: THREE.Mesh[] = [];
-  let vertexIndicators: THREE.Group;
   let tetraVertices: THREE.Vector3[] = [];
   let animationId: number;
   let animationPhase: 'rotating' | 'positioning' | 'expanding' | 'revealing' | 'fading-out' = 'rotating';
@@ -77,25 +76,7 @@
     
     scene.add(tetrahedron);
 
-    // Create custom vertex direction indicators
-    const vertexLines = new THREE.Group();
-    
-    // Create lines from center to each vertex
-    tetraVertices.forEach((vertex, index) => {
-      const lineGeometry = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, 0), // Center
-        vertex.clone().multiplyScalar(2) // Extend line beyond vertex
-      ]);
-      
-      // Color code the lines: red, green, blue, yellow
-      const colors = [0xff0000, 0x00ff00, 0x0000ff, 0xffff00];
-      const lineMaterial = new THREE.LineBasicMaterial({ color: colors[index] });
-      const line = new THREE.Line(lineGeometry, lineMaterial);
-      vertexLines.add(line);
-    });
-    
-    tetrahedron.add(vertexLines); // Attach to tetrahedron so it rotates with it
-    vertexIndicators = vertexLines; // Store reference for fade-out
+    // Vertex indicators removed - alignment is now perfect
 
     // Create concentric triangles (initially hidden)
     createConcentricTriangles();
@@ -346,10 +327,7 @@
       // Fade out tetrahedron and axes
       (tetrahedron.material as THREE.MeshBasicMaterial).opacity = 0.8 * (1 - fadeEase);
       
-      // Fade out vertex indicators
-      if (vertexIndicators) {
-        vertexIndicators.visible = fadeEase < 0.5; // Hide when fade is more than 50%
-      }
+      // Vertex indicators removed
       
       // Fade out any remaining triangles
       concentricTriangles.forEach((triangle) => {
