@@ -11,15 +11,17 @@
   let renderer: THREE.WebGLRenderer;
   let tetrahedron: THREE.Mesh;
   let concentricTriangles: THREE.Mesh[] = [];
+  let vertexIndicators: THREE.Group;
+  let tetraVertices: THREE.Vector3[] = [];
   let animationId: number;
   let animationPhase: 'rotating' | 'positioning' | 'expanding' | 'revealing' | 'fading-out' = 'rotating';
   
   // Animation state
   let finishStartTime: number = 0;
-  let positioningDuration = 800; // ms to rotate to face-on
-  let expandingDuration = 1000; // ms for triangles to expand
-  let revealingDuration = 1400; // ms for triangles to disappear layer by layer (longer for 22 triangles)
-  let fadeOutDuration = 1200; // ms to fade out everything
+  let positioningDuration = 600; // ms to rotate to downward-point position
+  let expandingDuration = 600; // ms for triangles to appear
+  let revealingDuration = 800; // ms for triangles to disappear layer by layer
+  let fadeOutDuration = 900; // ms to fade out everything
 
   onMount(() => {
     // Scene setup
@@ -50,7 +52,50 @@
       opacity: 0.8
     });
     tetrahedron = new THREE.Mesh(geometry, material);
+    
+    // Get the actual vertices of the tetrahedron
+    const vertices = geometry.getAttribute('position').array;
+    tetraVertices = [
+      new THREE.Vector3(vertices[0], vertices[1], vertices[2]),   // Vertex 0
+      new THREE.Vector3(vertices[3], vertices[4], vertices[5]),   // Vertex 1
+      new THREE.Vector3(vertices[6], vertices[7], vertices[8]),   // Vertex 2
+      new THREE.Vector3(vertices[9], vertices[10], vertices[11])  // Vertex 3
+    ];
+    
+    // Find the vertex that should point downward (we'll use the first one)
+    const targetVertex = tetraVertices[0];
+    const downwardDirection = new THREE.Vector3(0, -1, 0);
+    
+    // Calculate rotation to align this vertex with downward direction
+    const rotationQuaternion = new THREE.Quaternion().setFromUnitVectors(
+      targetVertex.normalize(), 
+      downwardDirection
+    );
+    
+    // Apply the rotation
+    tetrahedron.setRotationFromQuaternion(rotationQuaternion);
+    
     scene.add(tetrahedron);
+
+    // Create custom vertex direction indicators
+    const vertexLines = new THREE.Group();
+    
+    // Create lines from center to each vertex
+    tetraVertices.forEach((vertex, index) => {
+      const lineGeometry = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, 0, 0), // Center
+        vertex.clone().multiplyScalar(2) // Extend line beyond vertex
+      ]);
+      
+      // Color code the lines: red, green, blue, yellow
+      const colors = [0xff0000, 0x00ff00, 0x0000ff, 0xffff00];
+      const lineMaterial = new THREE.LineBasicMaterial({ color: colors[index] });
+      const line = new THREE.Line(lineGeometry, lineMaterial);
+      vertexLines.add(line);
+    });
+    
+    tetrahedron.add(vertexLines); // Attach to tetrahedron so it rotates with it
+    vertexIndicators = vertexLines; // Store reference for fade-out
 
     // Create concentric triangles (initially hidden)
     createConcentricTriangles();
@@ -137,16 +182,13 @@
       triangle.scale.setScalar(scale); // Set to final size immediately
       triangle.rotation.z = Math.PI; // Rotate 180 degrees to point downward
       
-      // Position triangles around the tetrahedron in layers
-      const layerDistance = 0.05 + (index * 0.08); // Much closer spacing for denser triangles
-      triangle.position.z = -layerDistance; // Place behind tetrahedron initially
+      // Position triangles at final position (no movement during animation)
+      triangle.position.z = 0; // Place at same plane as tetrahedron
       
               triangle.userData = { 
           originalScale: scale,
           index: index,
-          targetOpacity: Math.max(0.08, 0.9 - index * 0.025), // Adjusted for 22 triangles
-          finalZ: 0, // Final Z position (same plane as tetrahedron)
-          initialZ: -layerDistance
+          targetOpacity: Math.max(0.08, 0.9 - index * 0.025) // Adjusted for 22 triangles
         };
       
       scene.add(triangle);
@@ -160,12 +202,35 @@
       const progress = Math.min(elapsed / positioningDuration, 1);
       const easeOut = 1 - Math.pow(1 - progress, 3);
       
-      // Target rotation (one face prominently displayed)
-      const targetX = Math.PI / 6;  // 30 degrees
-      const targetY = Math.PI / 4;  // 45 degrees
-      
-      tetrahedron.rotation.x += (targetX - tetrahedron.rotation.x) * easeOut * 0.1;
-      tetrahedron.rotation.y += (targetY - tetrahedron.rotation.y) * easeOut * 0.1;
+             // Find the vertex closest to the camera direction (toward screen)
+       const cameraDirection = new THREE.Vector3(0, 0, -1); // Camera looks down negative Z
+       
+       // Get current vertex directions in world space
+       let closestDot = -2;
+       let closestVertexDirection = tetraVertices[0];
+       
+       tetraVertices.forEach(vertex => {
+         const worldVertex = vertex.clone().applyEuler(
+           new THREE.Euler(tetrahedron.rotation.x, tetrahedron.rotation.y, tetrahedron.rotation.z)
+         );
+         const dot = worldVertex.normalize().dot(cameraDirection);
+         if (dot > closestDot) {
+           closestDot = dot;
+           closestVertexDirection = vertex;
+         }
+       });
+       
+       // Calculate rotation to align closest vertex with camera direction
+       const targetQuaternion = new THREE.Quaternion().setFromUnitVectors(
+         closestVertexDirection.normalize(), 
+         cameraDirection
+       );
+       const targetEuler = new THREE.Euler().setFromQuaternion(targetQuaternion);
+       
+       // Apply rotation with easing
+       tetrahedron.rotation.x += (targetEuler.x - tetrahedron.rotation.x) * easeOut * 0.1;
+       tetrahedron.rotation.y += (targetEuler.y - tetrahedron.rotation.y) * easeOut * 0.1;
+       tetrahedron.rotation.z += (targetEuler.z - tetrahedron.rotation.z) * easeOut * 0.1;
       
       if (progress >= 1) {
         animationPhase = 'expanding';
@@ -176,19 +241,18 @@
        const progress = Math.min((elapsed - positioningDuration) / expandingDuration, 1);
        const easeOut = 1 - Math.pow(1 - progress, 2);
        
-                concentricTriangles.forEach((triangle, index) => {
-           // Stagger the appearance - smallest triangles appear first
-           const delay = index * 0.025; // Even faster stagger for 22 triangles
+                       concentricTriangles.forEach((triangle, index) => {
+         // Stagger the appearance - smallest triangles appear first
+         const delay = index * 0.015; // Faster stagger for quicker appearance
          const adjustedProgress = Math.max(0, Math.min(1, (progress - delay) / (1 - delay)));
          
          if (adjustedProgress > 0) {
-           // Fade in the triangle
-           const fadeEase = 1 - Math.pow(1 - adjustedProgress, 3);
+           // Simply fade in the triangle at full size and final position
+           const fadeEase = adjustedProgress * adjustedProgress * (3 - 2 * adjustedProgress); // Smoothstep for clean fade
            (triangle.material as THREE.MeshBasicMaterial).opacity = triangle.userData.targetOpacity * fadeEase;
            
-           // Move triangle from behind to the front plane
-           const positionEase = adjustedProgress * adjustedProgress * (3 - 2 * adjustedProgress); // Smoothstep
-           triangle.position.z = triangle.userData.initialZ + (triangle.userData.finalZ - triangle.userData.initialZ) * positionEase;
+           // Keep triangles at their final position (no movement effect)
+           triangle.position.z = 0;
          }
        });
        
@@ -231,7 +295,7 @@
            
            // Move triangles backward as they fade for depth effect
            const moveBack = fadeEase * 1.0;
-           triangle.position.z = triangle.userData.finalZ - moveBack;
+           triangle.position.z = 0 - moveBack;
          }
               });
        
@@ -242,8 +306,13 @@
       const progress = Math.min((elapsed - positioningDuration - expandingDuration - revealingDuration) / fadeOutDuration, 1);
       const fadeEase = progress * progress * (3 - 2 * progress); // Smoothstep
       
-      // Fade out tetrahedron
+      // Fade out tetrahedron and axes
       (tetrahedron.material as THREE.MeshBasicMaterial).opacity = 0.8 * (1 - fadeEase);
+      
+      // Fade out vertex indicators
+      if (vertexIndicators) {
+        vertexIndicators.visible = fadeEase < 0.5; // Hide when fade is more than 50%
+      }
       
       // Fade out any remaining triangles
       concentricTriangles.forEach((triangle) => {
